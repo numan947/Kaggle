@@ -332,3 +332,5 @@
 **/*.csv
 **/*.zip
 LeafClassification/images/*
+**/.data
+**/.vector_cache
