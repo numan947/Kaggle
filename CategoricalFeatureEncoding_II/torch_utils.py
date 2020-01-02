@@ -798,9 +798,7 @@ def plot_multiple_categorical(df, features, col_target=None, top_n=None
     plt.show();
 #########################################################################################
 
-## Count trainable parameters for a PyTorch model
-def count_model_params(model):
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
 
 
 
