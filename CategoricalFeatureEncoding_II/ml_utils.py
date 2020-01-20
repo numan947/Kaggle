@@ -721,9 +721,9 @@ def plot_multiple_categorical(df, features, col_target=None, top_n=None,
         if curFeatDtype in ["float16","float32","float64"]:
             curFeat.fillna(-1000.0, inplace=True)
         if curFeatDtype in ["object"]:
-            curFeat.fillna("_NaN", inplace=True)
+            curFeat.fillna("NaN", inplace=True)
         if curFeatDtype == "category" and curFeat.isnull().sum() > 0:
-            curFeat = curFeat.astype(str).replace('', '_NaN', regex=False).astype("category")
+            curFeat = curFeat.astype(str).replace('', 'NaN', regex=False).astype("category")
         
         
         ## create bar color
@@ -1196,7 +1196,7 @@ from sklearn import metrics
 from sklearn import preprocessing as pp
 from sklearn import model_selection as ms
 
-import torch_utils
+import ml_utils as mutils
 import time
 
 font = {'size'   : 20}
