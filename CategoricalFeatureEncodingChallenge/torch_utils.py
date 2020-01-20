@@ -804,11 +804,21 @@ def plot_multiple_categorical(df, features, col_target=None, top_n=None
 
 
 
+
 ## ALL IMPORTS FOR A NEW NOTEBOOK
+__SEED = 0
+__N_FOLDS = 5
+__NROWS = None
 
 import os, sys, random, math
+import matplotlib.pyplot as plt
+plt.style.use('ggplot')
+from tqdm import tqdm_notebook
 import numpy as np
 import pandas as pd
+pd.set_option('max_colwidth', 500)
+pd.set_option('max_columns', 500)
+pd.set_option('max_rows', 500)
 import matplotlib.pylab as plt
 import seaborn as sns
 import itertools as it
@@ -830,13 +840,13 @@ from sklearn import preprocessing as pp
 from sklearn import model_selection as ms
 
 import torch_utils
-from tqdm.notebook import tqdm_notebook as tqdm
 import time
 
 font = {'size'   : 20}
 
 matplotlib.rc('font', **font)
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 ###########################################################################
 # MAP CATEGORICAL NOMINAL VALUES WHICH ARE NOT IN BOTH TRAIN AND TEST TO A SINGLE UNIQUE VALUE

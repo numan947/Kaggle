@@ -7,7 +7,7 @@ import seaborn as sns
 import itertools as it
 import scipy
 import glob
-
+import datetime
 
 import torch
 import torch.nn as nn
@@ -380,7 +380,7 @@ def test_classifier(model, criterion, device, test_loader, one_hot=False, tta=Fa
 class EarlyStopping:
     """Early stops the training if validation loss doesn't improve after a given patience."""
     """Coding Credit: https://github.com/Bjarten/early-stopping-pytorch"""
-    def __init__(self, track="min", patience=7, verbose=False, delta=0):
+    def __init__(self, track="min", patience=7, verbose=False, delta=0, save_model_name="checkpoint.pt"):
         """
         Args:
             track (str): What to track, possible value: min, max (e.g. min validation loss, max validation accuracy (%))
@@ -401,6 +401,7 @@ class EarlyStopping:
         if self.track=="min":
             self.val_best = np.Inf
         self.delta = delta
+        self.save_model_name = save_model_name
 
     def __call__(self, current_score, model):
 
@@ -423,7 +424,7 @@ class EarlyStopping:
         '''Saves model when validation loss decrease.'''
         if self.verbose:
             print(f'Found better solution ({self.val_best:.6f} --> {new_best:.6f}).  Saving model ...')
-        torch.save(model.state_dict(), 'checkpoint.pt')
+        torch.save(model.state_dict(), self.save_model_name)
         self.val_best = new_best
 
 
@@ -547,25 +548,6 @@ def xavier_init(layer):
             layer.bias.data.fill_(0.01)
             
             
-
-def resumetable(df):
-    """https://www.kaggle.com/kabure/eda-feat-engineering-encode-conquer"""
-    print(f"Dataset Shape: {df.shape}")
-    summary = pd.DataFrame(df.dtypes,columns=['dtypes'])
-    summary = summary.reset_index()
-    summary['Name'] = summary['index']
-    summary = summary[['Name','dtypes']]
-    summary['Missing'] = df.isnull().sum().values    
-    summary['Uniques'] = df.nunique().values
-    summary['First Value'] = df.loc[0].values
-    summary['Second Value'] = df.loc[1].values
-    summary['Third Value'] = df.loc[2].values
-
-    for name in summary['Name'].value_counts().index:
-        summary.loc[summary['Name'] == name, 'Entropy'] = round(scipy.stats.entropy(df[name].value_counts(normalize=True), base=2),2) 
-
-    return summary
-
 ## Function to reduce the DF size
 def reduce_mem_usage(df, verbose=True):
     """https://www.kaggle.com/kabure/eda-feat-engineering-encode-conquer"""
@@ -701,114 +683,499 @@ class ThermometerEncoder(TransformerMixin):
 
 #########################################################################################
 #https://www.kaggle.com/adaubas/2nd-place-solution-categorical-fe-callenge
-def color_and_top(nb_mod, feature, typ, top_n=None):
-    
+def get_color_top_n_title(feature_unique_count, feature_name, feature_type, top_n=None):
     if top_n is None:
-        resu = ["g", nb_mod]
-    elif nb_mod > 2*top_n:
-        resu = ["r", top_n]
-    elif nb_mod > top_n:
-        resu =["orange", top_n]
+        result = ["g", feature_unique_count]
+    elif feature_unique_count > 2*top_n:
+        result = ["r", top_n]
+    elif feature_unique_count > top_n:
+        result =["y", top_n]
     else: 
-        resu = ["g", nb_mod]
+        result = ["g", top_n]
     
-    title = feature[:20]+" ("+typ[:3]+"-{})".format(nb_mod)
-    resu.append(title)
-    
-    return resu
+    title = feature_name[:20]+" ("+feature_type[:3]+"-{})".format(feature_unique_count)
+    result.append(title)
+    return result
 
-
-def plot_multiple_categorical(df, features, col_target=None, top_n=None
-                              , nb_subplots_per_row = 4, hspace = 1.3, wspace = 0.5
-                              , figheight=15, m_figwidth=4.2, landmark = .01):
+def plot_multiple_categorical(df, features, col_target=None, top_n=None, 
+                              n_subplots_per_row=4, hspace=1.3, wspace=0.5,
+                              fig_h=15, m_fig_w=4.2, landmark=0.01, save=False):
     
-    sns.set_style('whitegrid')
+    if col_target is not None:
+        ref = df[col_target].mean()
+        tgtFeat = df[col_target].copy()
     
-    if not (col_target is None):
-        ref = df[col_target].mean() # Reference
     
     plt.figure()
-    if len(features) % nb_subplots_per_row >0:
-        nb_rows = int(np.floor(len(features) / nb_subplots_per_row)+1)
-    else:
-        nb_rows = int(np.floor(len(features) / nb_subplots_per_row))
-    fig, ax = plt.subplots(nb_rows, nb_subplots_per_row, figsize=(figheight, m_figwidth * nb_rows))
-    plt.subplots_adjust(hspace = hspace, wspace = wspace)
-
-    i = 0; n_row=0; n_col=0
-    for feature in features:
+    
+    total_rows = int(np.ceil(1.0*len(features)/n_subplots_per_row))
+    
+    fig, ax = plt.subplots(total_rows, n_subplots_per_row, figsize=(fig_h, m_fig_w*total_rows))
+    plt.subplots_adjust(hspace=hspace, wspace=wspace)
+    
+    for i, f in enumerate(features):
+        curFeat = df[f].copy()
+        curFeatDtype = curFeat.dtype.name
         
-        i += 1
-        plt.subplot(nb_rows, nb_subplots_per_row, i)
-
-        dff = df[[feature, col_target]].copy() # I don't want transform data, only study them
+        ## Take care of the missing values
+        if curFeatDtype in ["float16","float32","float64"]:
+            curFeat.fillna(-1000.0, inplace=True)
+        if curFeatDtype in ["object"]:
+            curFeat.fillna("_NaN", inplace=True)
+        if curFeatDtype == "category" and curFeat.isnull().sum() > 0:
+            curFeat = curFeat.astype(str).replace('', '_NaN', regex=False).astype("category")
         
-        # Missing values
-        if dff[feature].dtype.name in ["float16", "float32", "float64"]:
-            dff[feature].fillna(-997, inplace=True)
+        
+        ## create bar color
+        bar_color, top_ns, title = get_color_top_n_title(curFeat.nunique(), f, str(curFeat.dtype.name), top_n)
+        
+        ## create statistics
+        
+        if col_target is not None:
+            tmpdf = pd.DataFrame()
+            tmpdf[col_target] = tgtFeat
+            tmpdf[f]=curFeat
             
-        if dff[feature].dtype.name in ["object"]:
-            dff[feature].fillna("_NaN", inplace=True)
+            stats = tmpdf.groupby([f]).agg({col_target: ['count', 'mean']})
+            stats = stats.sort_values((col_target, 'count'), ascending=False).head(top_ns).sort_index()
+        
+            stats.index = stats.index.map(str)
+            stats = stats.rename(index={'-1000.0':'NaN'})
+            if top_n is not None:
+                stats.index = stats.index.map(lambda x: x[:top_n])
+        
+            stats["ref"] = ref
+            stats["ref-"] = ref-landmark
+            stats["ref+"] = ref+landmark
+            ax[i//n_subplots_per_row][i%n_subplots_per_row].bar(stats.index, stats[col_target]['count'], color=bar_color)
             
-        if dff[feature].dtype.name == "category" and dff[feature].isnull().sum() > 0:
-            dff[feature] = dff[feature].astype(str).replace('', '_NaN', regex=False).astype("category")
+            xx = ax[i//n_subplots_per_row][i%n_subplots_per_row].get_xlim()
             
-        # Colors, title
-        bar_colr, top_nf, title = color_and_top(dff[feature].nunique(), feature, str(dff[feature].dtype), top_n)
-        
-        # stats
-        tdf = dff.groupby([feature]).agg({col_target: ['count', 'mean']})
-        tdf = tdf.sort_values((col_target, 'count'), ascending=False).head(top_nf).sort_index()
-        
-        tdf.index = tdf.index.map(str)
-        tdf = tdf.rename(index={'-997.0':'NaN'}) # Missing values
-        if not (top_n is None):
-            tdf.index = tdf.index.map(lambda x: x[:top_n]) # tronque les libellés des modalités en abcisse
-        
-        tdf["ref"] = ref
-        tdf["ref-"] = ref-landmark
-        tdf["ref+"] = ref+landmark
-        
-        # First Y axis, on the left
-        plt.bar(tdf.index, tdf[col_target]['count'].values, color=bar_colr) # Count of each category
-        
-        plt.title(title, fontsize=11)
-        plt.xticks(rotation=90)
-        
-        # Second Y axis, on the right
-        xx = plt.xlim()
-        if nb_subplots_per_row == 1:
-            ax2 = fig.add_subplot(nb_rows, nb_subplots_per_row, i, sharex = ax[n_row], frameon = False)
+            ax2 = fig.add_subplot(total_rows,n_subplots_per_row, i+1, sharex=ax[i//n_subplots_per_row,i%n_subplots_per_row], frameon=False)
+            ax2.plot(stats[col_target]['mean'].values, marker="x", color="b", linestyle="dashed")
+            
+            ax2.plot(stats["ref"].values, marker="_", color="black", linestyle="solid", linewidth=2.5)
+            ax2.plot(stats["ref-"].values, marker="_", color="black",linewidth=1)
+            ax2.plot(stats["ref+"].values, marker="_", color="black",linewidth=1)
+            
+            ax2.yaxis.tick_right()
+            ax2.axes.get_xaxis().set_visible(False)
+            
+            ax[i//n_subplots_per_row][i%n_subplots_per_row].set_xlim(xx)
+            
+            
         else:
-            ax2 = fig.add_subplot(nb_rows, nb_subplots_per_row, i, sharex = ax[n_row, n_col], frameon = False)
-        if not (col_target is None):
-            ax2.plot(tdf[col_target]['mean'].values, marker = 'x', color = 'b', linestyle = "solid") # Mean of each Category
-            ax2.plot(tdf["ref"].values, marker = '_', color = 'black', linestyle = "solid", linewidth=4.0) # Reference
-            ax2.plot(tdf["ref-"].values, marker = '_', color = 'black', linestyle = "solid", linewidth=1.0) # Reference
-            ax2.plot(tdf["ref+"].values, marker = '_', color = 'black', linestyle = "solid", linewidth=1.0) # Reference
-        ax2.yaxis.tick_right()
-        ax2.axes.get_xaxis().set_visible(False)
-        plt.xlim(xx)
-
-        n_col += 1
-        if n_col == nb_subplots_per_row:
-            n_col = 0
-            n_row += 1
+            vc = curFeat.value_counts()
+            vc = vc.head(top_ns).sort_index()
+            vc.index = vc.index.map(str)
+            vc = vc.rename(index={"-1000.0":"NaN"})
             
-    plt.show();
+            if top_n is not None:
+                vc.index = vc.index.map(lambda x: x[:top_n])
+            ax[i//n_subplots_per_row][i%n_subplots_per_row].bar(vc.index, vc.values, color=bar_color)
+        
+        ax[i//n_subplots_per_row][i%n_subplots_per_row].set_title(title, fontsize=12)
+        ax[i//n_subplots_per_row][i%n_subplots_per_row].tick_params(axis="x",rotation=90)
+    
+    
+    if(n_subplots_per_row*total_rows!=len(features)):
+        for i in range(1,1+(n_subplots_per_row*total_rows)-len(features)):
+            ax[-1][-i].axis("off")
+    
+    fig.tight_layout()
+    if save:
+        plt.savefig("CatPlot showing relation with target.png", bbox_inches="tight")
+    else:
+        plt.show()
 #########################################################################################
+## Count trainable parameters for a PyTorch model
+def count_model_params(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
+def print_epoch_stat(epoch_idx, time_elapsed_in_seconds, history=None, train_loss=None, train_accuracy=None, valid_loss=None, valid_accuracy=None):
+    print("\n\nEPOCH {} Completed, Time Taken: {}".format(epoch_idx+1, datetime.timedelta(seconds=time_elapsed_in_seconds)))
+    if train_loss is not None:
+        if history is not None:
+            history.loc[epoch_idx, "train_loss"] = train_loss
+        print("\tTrain Loss \t{:0.9}".format(train_loss))
+    if train_accuracy is not None:
+        if history is not None:
+            history.loc[epoch_idx, "train_accuracy"] = 100.0*train_accuracy
+        print("\tTrain Accuracy \t{:0.9}%".format(100.0*train_accuracy))
+    if valid_loss is not None:
+        if history is not None:
+            history.loc[epoch_idx, "valid_loss"] = valid_loss
+        print("\tValid Loss \t{:0.9}".format(valid_loss))
+    if valid_accuracy is not None:
+        if history is not None:
+            history.loc[epoch_idx, "valid_accuracy"] = 100.0*valid_accuracy
+        print("\tValid Accuracy \t{:0.9}%".format(100.0*valid_accuracy))
+    
+    return history
+
+
+"""
+CODE TAKEN FROM: https://github.com/pytorch/text/blob/master/torchtext/data/metrics.py
+"""
+
+import math
+import collections
+import torch
+from torchtext.data.utils import ngrams_iterator
+
+def _compute_ngram_counter(tokens, max_n):
+    """ Create a Counter with a count of unique n-grams in the tokens list
+    Arguments:
+        tokens: a list of tokens (typically a string split on whitespaces)
+        max_n: the maximum order of n-gram wanted
+    Outputs:
+        output: a collections.Counter object with the unique n-grams and their
+            associated count
+    Examples:
+        >>> from torchtext.data.metrics import _compute_ngram_counter
+        >>> tokens = ['me', 'me', 'you']
+        >>> _compute_ngram_counter(tokens, 2)
+            Counter({('me',): 2,
+             ('you',): 1,
+             ('me', 'me'): 1,
+             ('me', 'you'): 1,
+             ('me', 'me', 'you'): 1})
+    """
+    assert max_n > 0
+    ngrams_counter = collections.Counter(tuple(x.split(' '))
+                                         for x in ngrams_iterator(tokens, max_n))
+
+    return ngrams_counter
+
+
+def bleu_score(candidate_corpus, references_corpus, max_n=4, weights=[0.25] * 4):
+    """Computes the BLEU score between a candidate translation corpus and a references
+    translation corpus. Based on https://www.aclweb.org/anthology/P02-1040.pdf
+    Arguments:
+        candidate_corpus: an iterable of candidate translations. Each translation is an
+            iterable of tokens
+        references_corpus: an iterable of iterables of reference translations. Each
+            translation is an iterable of tokens
+        max_n: the maximum n-gram we want to use. E.g. if max_n=3, we will use unigrams,
+            bigrams and trigrams
+        weights: a list of weights used for each n-gram category (uniform by default)
+    Examples:
+        >>> from torchtext.data.metrics import bleu_score
+        >>> candidate_corpus = [['I', 'ate', 'the', 'apple'], ['I', 'did']]
+        >>> references_corpus = [[['I', 'ate', 'it'], ['I', 'ate', 'apples']],
+                [['I', 'did']]]
+        >>> bleu_score(candidate_corpus, references_corpus)
+            0.7598356856515925
+    """
+
+    assert max_n == len(weights), 'Length of the "weights" list has be equal to max_n'
+    assert len(candidate_corpus) == len(references_corpus),\
+        'The length of candidate and reference corpus should be the same'
+
+    clipped_counts = torch.zeros(max_n)
+    total_counts = torch.zeros(max_n)
+    weights = torch.tensor(weights)
+
+    candidate_len = 0.0
+    refs_len = 0.0
+
+    for (candidate, refs) in zip(candidate_corpus, references_corpus):
+        candidate_len += len(candidate)
+
+        # Get the length of the reference that's closest in length to the candidate
+        refs_len_list = [float(len(ref)) for ref in refs]
+        refs_len += min(refs_len_list, key=lambda x: abs(len(candidate) - x))
+
+        reference_counters = _compute_ngram_counter(refs[0], max_n)
+        for ref in refs[1:]:
+            reference_counters = reference_counters | _compute_ngram_counter(ref, max_n)
+
+        candidate_counter = _compute_ngram_counter(candidate, max_n)
+
+        clipped_counter = candidate_counter & reference_counters
+
+        for ngram in clipped_counter:
+            clipped_counts[len(ngram) - 1] += clipped_counter[ngram]
+
+        for ngram in candidate_counter:  # TODO: no need to loop through the whole counter
+            total_counts[len(ngram) - 1] += candidate_counter[ngram]
+
+    if min(clipped_counts) == 0:
+        return 0.0
+    else:
+        pn = clipped_counts / total_counts
+        log_pn = weights * torch.log(pn)
+        score = torch.exp(sum(log_pn))
+
+        bp = math.exp(min(1 - refs_len / candidate_len, 0))
+
+        return bp * score.item()
+
+class PositionalEncoding(nn.Module):
+    """Implement the PE function of the iconic paper: "Attention is all you need". 
+    This is basically a embedding layer for the positions. It supports upto 5000 positions.
+    Input the word embeddings, and it will return the added final embeddings.    
+    """
+    def __init__(self, d_model, dropout=0.4, max_len=5000):
+        
+        super(PositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
+        
+        # Compute the positional encodings once in log space.
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len).unsqueeze(1)
+        
+        div_term = torch.exp(torch.arange(0, d_model, 2) *
+                             -(math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)
+        self.register_buffer('pe', pe)
+        
+    def forward(self, x):
+        x = x + self.pe[:, :x.size(1)].clone().detach().requires_grad_(False)
+        return self.dropout(x)
+
+
+
+def summarize_all(df):
+    """https://www.kaggle.com/kabure/eda-feat-engineering-encode-conquer"""
+    print(f"Dataset Shape: {df.shape}")
+    summary = pd.DataFrame(df.dtypes,columns=['dtypes'])
+    summary = summary.reset_index()
+    summary['Name'] = summary['index']
+    summary = summary[['Name','dtypes']]
+    summary['Missing'] = df.isnull().sum().values    
+    summary['Uniques'] = df.nunique().values
+    summary['First Value'] = df.loc[0].values
+    summary['Second Value'] = df.loc[1].values
+    summary['Third Value'] = df.loc[2].values
+
+    for name in summary['Name'].value_counts().index:
+        summary.loc[summary['Name'] == name, 'Entropy'] = round(scipy.stats.entropy(df[name].value_counts(normalize=True), base=2),2) 
+
+    return summary
 
 
 
 
+# contingency table should be a dataframe
+# cramerV is kind of correlation between two categorical variables
+def calculate_cramerV(contingency_table):
+    # get the chi2 value
+    chi2 = scipy.stats.chi2_contingency(contingency_table)[0]
+    # count total values in the table
+    n = contingency_table.sum().sum()
+    # get the number of rows and columns in the table
+    r,c = contingency_table.shape
+    # calculate cramerV
+    cramerV = np.sqrt(chi2/(n*min(r-1, c-1)))
+    
+    return cramerV
+
+def summarize_categorical(train, test, use_feat=[], exclude_feat=[], target_for_cramerV=None):
+    """
+    train: train dataframe
+    test: test dataframe
+    
+    use_feat: list of features for which statistics will be calculated, if empty, uses all columns except the ones in exclue_feat
+    exclue_feat: features to be exclueded from the statistics calculation
+    
+    target_for_cramerV: target column label for cramerV calculation
+
+    """
+    
+    
+    all_stats = []
+    
+    if len(use_feat)==0:
+        use_feat = [c for c in list(train.columns) if c not in exclude_feat]
+    
+    for col in tqdm(use_feat):
+        vcTrain = dict(train[col].value_counts())
+        vcTest = dict(test[col].value_counts())
+        
+        set_train_only_vals = set(vcTrain.keys())-set(vcTest.keys())
+        set_test_only_vals = set(vcTest.keys())-set(vcTrain.keys())
+        
+        dict_train_only_vals = {k:v for k,v in vcTrain.items() if k in set_train_only_vals}
+        dict_test_only_vals = {k:v for k,v in vcTest.items() if k in set_test_only_vals}
+        
+        trainUniqueVals, trainTotalVals = len(vcTrain), pd.Series(vcTrain).sum()
+        trainOnlyUniqueVals, trainOnlyTotalVals = len(dict_train_only_vals), pd.Series(dict_train_only_vals).sum()
+        
+        testUniqueVals, testTotalVals = len(vcTest), pd.Series(vcTest).sum()
+        testOnlyUniqueVals, testOnlyTotalVals = len(dict_test_only_vals), pd.Series(dict_test_only_vals).sum()
+        
+        
+        if target_for_cramerV is not None:
+            contingency_table = pd.crosstab(train[col], train[target_for_cramerV].fillna(-1))
+            vc = calculate_cramerV(contingency_table)
+        else:
+            vc = -1
+            
+        all_stats.append((
+            col, round(vc, 3), train[col].nunique(),
+            test[col].nunique(),
+            str(trainOnlyUniqueVals)+"("+str(round(100.0*(trainOnlyUniqueVals/trainUniqueVals),3))+")",
+            str(testOnlyUniqueVals)+"("+str(round(100.0*(testOnlyUniqueVals/testUniqueVals),3))+")",
+            str(train[col].isnull().sum())+"("+str(round(100.0*(train[col].isnull().sum()/train.shape[0]),3))+")",
+            str(train[col].isnull().sum())+"("+str(round(100.0*(train[col].isnull().sum()/train.shape[0]),3))+")",
+            str(train[col].value_counts().index[0])+"("+str(round(100.0 * train[col].value_counts(normalize = True, dropna = False).values[0], 3))+")",
+            train[col].dtype
+        ))
+    
+    
+    df_stats = pd.DataFrame(all_stats,columns=[
+        "Feature",
+        "Target Cramer's V",
+        "Unique values (Train)",
+        "Unique values (Test)",
+        "Train only value counts",
+        "Test only value counts",
+        "Missing (Train)",
+        "Missing (Test)",
+        "Value with the highest counts (Train)",
+        "DataType"
+    ])
+    
+    if target_for_cramerV is None:
+        df_stats.drop(["Target Cramer's V"], axis=1, inplace=True)
+        
+    return df_stats, dict_train_only_vals, dict_test_only_vals
+
+
+
+
+
+##################################################################################################################################################################
+################################################## RIGOROUS CROSS VALIDATION #####################################################################################
+# fold1 = ms.StratifiedKFold(n_splits=__N_FOLDS, shuffle=True, random_state=__SEED)
+# fold2 = ms.StratifiedKFold(n_splits=__N_FOLDS, shuffle=True, random_state=__SEED+3)
+# fold3 = ms.StratifiedKFold(n_splits=__N_FOLDS, shuffle=True, random_state=__SEED+5)
+
+# def cross_val_print(pipe, X, y, cv, scoring="roc_auc", best_score=0.):
+#     scores = ms.cross_validate(pipe, X, y, cv=cv, scoring=scoring, return_train_score=True)
+#     cv_score = scores["test_score"].mean()
+#     train_score = scores["train_score"].mean()
+    
+#     if cv == fold1:
+#         precision=1
+#     elif cv == fold2:
+#         precision=2
+#     elif cv == fold3:
+#         precision=3
+        
+    
+#     print("CV{} score on valid: {:.7f} - Previous best valid score: {:.7f} - Train mean score: {:6f}".format(precision, cv_score, best_score, train_score))
+    
+#     if cv_score>best_score:
+#         best_score = cv_score
+    
+#     return cv_score, best_score
+##################################################################################################################################################################
+################################################## TRANSFORMING CATEGORICAL TO ORDINAL ###########################################################################
+
+# def transform_feat(srs):
+#     transform_dict = {
+#         "ord_1":{"Novice":0,"Contributor":1,"Expert":2, "Master":3, "Grandmaster":4},
+#         "ord_2":{"Freezing":0,"Cold":1,"Warm":2, "Hot":3, "Boiling Hot":4,"Lava Hot":5},
+#         "nom_0":{"Blue":1,"Green":2, "Red":3},
+#         "nom_1":{"Circle":1,"Trapezoid":2, "Star":3,"Polygon":4,"Square":5,"Triangle":6},
+#         "nom_2":{"Dog":1,"Lion":2, "Snake":3,"Axolotl":4,"Cat":5,"Hamster":6},
+#         "nom_3":{"Finland":1,"Russia":2, "China":3,"Costa Rica":4,"Canada":5,"India":6},
+#         "nom_4":{"Bassoon":1,"Piano":2, "Oboe":3,"Theremin":4}   
+#     }
+    
+#     if srs.name == "ord_0":
+#         return srs-1
+#     elif srs.name == "ord_5":
+#         vals = list(np.sort(srs.unique()))
+#         return srs.map({l:i for i, l in enumerate(vals)})
+#     elif srs.name in ["ord_3", "ord_4"]:
+#         return srs.str.lower().map({l:i for i, l in enumerate(list(ascii_lowercase))})
+#     elif srs.name in transform_dict.keys():
+#         return srs.map(transform_dict[srs.name])
+#     else:
+#         return srs
+#
+##################################################################################################################################################################
+######################################################## BINNING HIGH CARDINALITY FEATURE #######################################################################
+# class BinsEncoder(BaseEstimator, TransformerMixin):
+#     """
+#         Binning high cardinality categorical values.
+        
+#     """
+#     def __init__(self, nbins=200, nmin=20):
+#         self.nbins = nbins
+#         self.nmin = nmin
+    
+#     def fit(self, X, y=None):
+#         tmp = pd.concat([X,y], axis=1)
+        
+#         averages = tmp.groupby(by=X.name)[y.name].mean()
+#         means_for_each_vals = dict(zip(averages.index.values, averages.values))
+#         bins = np.linspace(averages.min(), averages.max(), self.nbins)
+#         self.map_ = dict(zip(averages.index.values, np.digitize(averages.values, bins=bins)))
+        
+#         ## If some key has more than nmin observations, keep the original key, otherwise bin the key
+#         count = tmp.groupby(by=X.name)[y.name].count()
+#         count_for_each_vals = dict(zip(count.index.values, count.values))
+        
+#         for key, val in count_for_each_vals.items():
+#             if val>self.nmin:
+#                 self.map_[key]=key
+            
+#         return self
+    
+#     def transform(self, X, y=None):
+#         tmp = X.map(self.map_)
+#         tmp.fillna(random.choice(list(self.map_.values())), inplace=True)
+#         tmp = tmp.astype(str)
+#         return tmp
+##################################################################################################################################################################
+################################################## FEATURE ENGINEERING WITH BINNING AND ORDINAL TRANSFORM ########################################################
+# class FEUpgraded(BaseEstimator, TransformerMixin):
+#     def __init__(self, list_ordinal_features=[], feat_to_bins_encode={}):
+#         self.list_ordinal_features = list_ordinal_features
+#         self.feat_to_bins_encode = feat_to_bins_encode
+#         self.BinsEncoder = {}
+    
+#     def fit(self, X, y=None):
+#         for feat, val in self.feat_to_bins_encode.items():
+#             self.BinsEncoder[feat] = BinsEncoder(nbins=val[0], nmin=val[1])
+#             self.BinsEncoder[feat].fit(X[feat], y)
+#         return self
+#     def transform(self, X, y=None):
+#         df = X.copy()
+#         for v in self.feat_to_bins_encode.keys():
+#             df[v] = self.BinsEncoder[v].transform(df[v])
+            
+#         for v in self.list_ordinal_features:
+#             df[v] = transform_feat(df[v])
+        
+#         return df
+##################################################################################################################################################################
 
 
 
 ## ALL IMPORTS FOR A NEW NOTEBOOK
+__SEED = 0
+__N_FOLDS = 5
+__NROWS = None
 
 import os, sys, random, math
+import matplotlib.pyplot as plt
+# %matplotlib inline
+plt.style.use('ggplot')
+
+from tqdm.notebook import tqdm
 import numpy as np
 import pandas as pd
+pd.set_option('max_colwidth', 500)
+pd.set_option('max_columns', 500)
+pd.set_option('max_rows', 500)
 import matplotlib.pylab as plt
 import seaborn as sns
 import itertools as it
@@ -830,24 +1197,8 @@ from sklearn import preprocessing as pp
 from sklearn import model_selection as ms
 
 import torch_utils
-from tqdm.notebook import tqdm_notebook as tqdm
 import time
 
 font = {'size'   : 20}
-
 matplotlib.rc('font', **font)
-
-
-###########################################################################
-# MAP CATEGORICAL NOMINAL VALUES WHICH ARE NOT IN BOTH TRAIN AND TEST TO A SINGLE UNIQUE VALUE
-# for col in range(5,10):
-#     col = "nom_"+str(col)
-#     train_uniq = set(train_df[col].unique())
-#     test_uniq = set(test_df[col].unique())
-    
-#     xor_cat = train_uniq ^ test_uniq
-    
-#     if len(xor_cat)>0:
-#         catted.loc[catted[col].isin(xor_cat), col] = "xor"
-
-###########################################################################
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
