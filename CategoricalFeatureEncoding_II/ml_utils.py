@@ -8,6 +8,7 @@ import itertools as it
 import scipy
 import glob
 import datetime
+import pickle
 
 import torch
 import torch.nn as nn
@@ -29,6 +30,16 @@ import gc
 import math
 import torch
 from torch.optim.optimizer import Optimizer, required
+
+
+def load_pickled_object(path):
+    with open(path, 'rb') as config_dictionary_file:
+        return pickle.load(config_dictionary_file)
+        
+def pickle_save_object(dictionary, path):
+    with open('config.dictionary', 'wb') as config_dictionary_file:
+        pickle.dump(dictionary, config_dictionary_file)    
+
 
 class RAdam(Optimizer):
 
@@ -1197,7 +1208,9 @@ from sklearn import preprocessing as pp
 from sklearn import model_selection as ms
 
 import ml_utils as mutils
-import time
+import time, datetime, pickle
+
+
 
 font = {'size'   : 20}
 matplotlib.rc('font', **font)
