@@ -32,6 +32,22 @@ import torch
 from torch.optim.optimizer import Optimizer, required
 
 
+
+def load_experiments():
+    RESULT_FILE_NAME = "./EXPERIMENTS.csv"
+    if os.path.exists(RESULT_FILE_NAME):
+        return pd.read_csv(RESULT_FILE_NAME, index_col="name")
+    else:
+        f = open(RESULT_FILE_NAME, "w")
+        f.write("name,result1,result2,result3")
+        f.close()
+        return load_experiments()
+def save_experiments(df, pref = ""):
+    if len(pref)>0:
+        pref+="_"
+    RESULT_FILE_NAME = pref+"EXPERIMENTS.csv"
+    df.to_csv(RESULT_FILE_NAME)
+    
 def load_pickled_object(path):
     with open(path, 'rb') as config_dictionary_file:
         return pickle.load(config_dictionary_file)
@@ -1062,9 +1078,7 @@ def summarize_categorical(train, test, use_feat=[], exclude_feat=[], target_for_
 
 ##################################################################################################################################################################
 ################################################## RIGOROUS CROSS VALIDATION #####################################################################################
-# fold1 = ms.StratifiedKFold(n_splits=__N_FOLDS, shuffle=True, random_state=__SEED)
-# fold2 = ms.StratifiedKFold(n_splits=__N_FOLDS, shuffle=True, random_state=__SEED+3)
-# fold3 = ms.StratifiedKFold(n_splits=__N_FOLDS, shuffle=True, random_state=__SEED+5)
+
 
 # def cross_val_print(pipe, X, y, cv, scoring="roc_auc", best_score=0.):
 #     scores = ms.cross_validate(pipe, X, y, cv=cv, scoring=scoring, return_train_score=True)
@@ -1170,6 +1184,21 @@ def summarize_categorical(train, test, use_feat=[], exclude_feat=[], target_for_
 ##################################################################################################################################################################
 
 
+def transform_cv(transformer, x_train, y_train, cv):
+    """
+    Useful for Target Encoding and CatboostEncoding etc.
+    """
+    oof = pd.DataFrame(index=x_train.index, columns=x_train.columns)
+    for train_idx, valid_idx in cv.split(x_train, y_train):
+        x_train_train = x_train.loc[train_idx]
+        y_train_train = y_train.loc[train_idx]
+        x_train_valid = x_train.loc[valid_idx]
+        transformer.fit(x_train_train, y_train_train)
+        oof_part = transformer.transform(x_train_valid)
+        oof.loc[valid_idx] = oof_part
+    return oof
+
+
 
 ## ALL IMPORTS FOR A NEW NOTEBOOK
 __SEED = 0
@@ -1211,7 +1240,9 @@ import ml_utils as mutils
 import time, datetime, pickle
 
 
-
-font = {'size'   : 20}
+# fold1 = ms.StratifiedKFold(n_splits=__N_FOLDS, shuffle=True, random_state=__SEED)
+# fold2 = ms.StratifiedKFold(n_splits=__N_FOLDS, shuffle=True, random_state=__SEED+3)
+# fold3 = ms.StratifiedKFold(n_splits=__N_FOLDS, shuffle=True, random_state=__SEED+5)
+font = {'size'   : 14}
 matplotlib.rc('font', **font)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
