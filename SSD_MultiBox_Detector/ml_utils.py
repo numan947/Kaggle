@@ -8,6 +8,7 @@ import itertools as it
 import scipy
 import glob
 import datetime
+import pickle
 
 import torch
 import torch.nn as nn
@@ -29,6 +30,30 @@ import gc
 import math
 import torch
 from torch.optim.optimizer import Optimizer, required
+
+
+
+def load_experiments():
+    RESULT_FILE_NAME = "./EXPERIMENTS.csv"
+    if os.path.exists(RESULT_FILE_NAME):
+        return pd.read_csv(RESULT_FILE_NAME, index_col="name")
+    else:
+        f = open(RESULT_FILE_NAME, "w")
+        f.write("name,result1,result2,result3")
+        f.close()
+        return load_experiments()
+def save_experiments(df):
+    RESULT_FILE_NAME = "./EXPERIMENTS.csv"
+    df.to_csv(RESULT_FILE_NAME, index=False)
+
+def load_pickled_object(path):
+    with open(path, 'rb') as config_dictionary_file:
+        return pickle.load(config_dictionary_file)
+        
+def pickle_save_object(dictionary, path):
+    with open('config.dictionary', 'wb') as config_dictionary_file:
+        pickle.dump(dictionary, config_dictionary_file)    
+
 
 class RAdam(Optimizer):
 
@@ -514,6 +539,11 @@ def clear_cuda():
 def get_lr(optimizer):
     for param_group in optimizer.param_groups:
         return param_group['lr']
+
+def adjust_learning_rate(optimizer, scale):
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = param_group['lr']*scale
+    return optimizer
     
     
 class Sq_Ex_Block(nn.Module):
@@ -548,25 +578,6 @@ def xavier_init(layer):
             layer.bias.data.fill_(0.01)
             
             
-
-def resumetable(df):
-    """https://www.kaggle.com/kabure/eda-feat-engineering-encode-conquer"""
-    print(f"Dataset Shape: {df.shape}")
-    summary = pd.DataFrame(df.dtypes,columns=['dtypes'])
-    summary = summary.reset_index()
-    summary['Name'] = summary['index']
-    summary = summary[['Name','dtypes']]
-    summary['Missing'] = df.isnull().sum().values    
-    summary['Uniques'] = df.nunique().values
-    summary['First Value'] = df.loc[0].values
-    summary['Second Value'] = df.loc[1].values
-    summary['Third Value'] = df.loc[2].values
-
-    for name in summary['Name'].value_counts().index:
-        summary.loc[summary['Name'] == name, 'Entropy'] = round(scipy.stats.entropy(df[name].value_counts(normalize=True), base=2),2) 
-
-    return summary
-
 ## Function to reduce the DF size
 def reduce_mem_usage(df, verbose=True):
     """https://www.kaggle.com/kabure/eda-feat-engineering-encode-conquer"""
@@ -702,103 +713,111 @@ class ThermometerEncoder(TransformerMixin):
 
 #########################################################################################
 #https://www.kaggle.com/adaubas/2nd-place-solution-categorical-fe-callenge
-def color_and_top(nb_mod, feature, typ, top_n=None):
-    
+def get_color_top_n_title(feature_unique_count, feature_name, feature_type, top_n=None):
     if top_n is None:
-        resu = ["g", nb_mod]
-    elif nb_mod > 2*top_n:
-        resu = ["r", top_n]
-    elif nb_mod > top_n:
-        resu =["orange", top_n]
+        result = ["g", feature_unique_count]
+    elif feature_unique_count > 2*top_n:
+        result = ["r", top_n]
+    elif feature_unique_count > top_n:
+        result =["y", top_n]
     else: 
-        resu = ["g", nb_mod]
+        result = ["g", top_n]
     
-    title = feature[:20]+" ("+typ[:3]+"-{})".format(nb_mod)
-    resu.append(title)
-    
-    return resu
+    title = feature_name[:20]+" ("+feature_type[:3]+"-{})".format(feature_unique_count)
+    result.append(title)
+    return result
 
-
-def plot_multiple_categorical(df, features, col_target=None, top_n=None
-                              , nb_subplots_per_row = 4, hspace = 1.3, wspace = 0.5
-                              , figheight=15, m_figwidth=4.2, landmark = .01):
+def plot_multiple_categorical(df, features, col_target=None, top_n=None, 
+                              n_subplots_per_row=4, hspace=1.3, wspace=0.5,
+                              fig_h=15, m_fig_w=4.2, landmark=0.01, save=False):
     
-    sns.set_style('whitegrid')
+    if col_target is not None:
+        ref = df[col_target].mean()
+        tgtFeat = df[col_target].copy()
     
-    if not (col_target is None):
-        ref = df[col_target].mean() # Reference
     
     plt.figure()
-    if len(features) % nb_subplots_per_row >0:
-        nb_rows = int(np.floor(len(features) / nb_subplots_per_row)+1)
-    else:
-        nb_rows = int(np.floor(len(features) / nb_subplots_per_row))
-    fig, ax = plt.subplots(nb_rows, nb_subplots_per_row, figsize=(figheight, m_figwidth * nb_rows))
-    plt.subplots_adjust(hspace = hspace, wspace = wspace)
-
-    i = 0; n_row=0; n_col=0
-    for feature in features:
+    
+    total_rows = int(np.ceil(1.0*len(features)/n_subplots_per_row))
+    
+    fig, ax = plt.subplots(total_rows, n_subplots_per_row, figsize=(fig_h, m_fig_w*total_rows))
+    plt.subplots_adjust(hspace=hspace, wspace=wspace)
+    
+    for i, f in enumerate(features):
+        curFeat = df[f].copy()
+        curFeatDtype = curFeat.dtype.name
         
-        i += 1
-        plt.subplot(nb_rows, nb_subplots_per_row, i)
-
-        dff = df[[feature, col_target]].copy() # I don't want transform data, only study them
+        ## Take care of the missing values
+        if curFeatDtype in ["float16","float32","float64"]:
+            curFeat.fillna(-1000.0, inplace=True)
+        if curFeatDtype in ["object"]:
+            curFeat.fillna("_NaN", inplace=True)
+        if curFeatDtype == "category" and curFeat.isnull().sum() > 0:
+            curFeat = curFeat.astype(str).replace('', '_NaN', regex=False).astype("category")
         
-        # Missing values
-        if dff[feature].dtype.name in ["float16", "float32", "float64"]:
-            dff[feature].fillna(-997, inplace=True)
+        
+        ## create bar color
+        bar_color, top_ns, title = get_color_top_n_title(curFeat.nunique(), f, str(curFeat.dtype.name), top_n)
+        
+        ## create statistics
+        
+        if col_target is not None:
+            tmpdf = pd.DataFrame()
+            tmpdf[col_target] = tgtFeat
+            tmpdf[f]=curFeat
             
-        if dff[feature].dtype.name in ["object"]:
-            dff[feature].fillna("_NaN", inplace=True)
+            stats = tmpdf.groupby([f]).agg({col_target: ['count', 'mean']})
+            stats = stats.sort_values((col_target, 'count'), ascending=False).head(top_ns).sort_index()
+        
+            stats.index = stats.index.map(str)
+            stats = stats.rename(index={'-1000.0':'NaN'})
+            if top_n is not None:
+                stats.index = stats.index.map(lambda x: x[:top_n])
+        
+            stats["ref"] = ref
+            stats["ref-"] = ref-landmark
+            stats["ref+"] = ref+landmark
+            ax[i//n_subplots_per_row][i%n_subplots_per_row].bar(stats.index, stats[col_target]['count'], color=bar_color)
             
-        if dff[feature].dtype.name == "category" and dff[feature].isnull().sum() > 0:
-            dff[feature] = dff[feature].astype(str).replace('', '_NaN', regex=False).astype("category")
+            xx = ax[i//n_subplots_per_row][i%n_subplots_per_row].get_xlim()
             
-        # Colors, title
-        bar_colr, top_nf, title = color_and_top(dff[feature].nunique(), feature, str(dff[feature].dtype), top_n)
-        
-        # stats
-        tdf = dff.groupby([feature]).agg({col_target: ['count', 'mean']})
-        tdf = tdf.sort_values((col_target, 'count'), ascending=False).head(top_nf).sort_index()
-        
-        tdf.index = tdf.index.map(str)
-        tdf = tdf.rename(index={'-997.0':'NaN'}) # Missing values
-        if not (top_n is None):
-            tdf.index = tdf.index.map(lambda x: x[:top_n]) # tronque les libellés des modalités en abcisse
-        
-        tdf["ref"] = ref
-        tdf["ref-"] = ref-landmark
-        tdf["ref+"] = ref+landmark
-        
-        # First Y axis, on the left
-        plt.bar(tdf.index, tdf[col_target]['count'].values, color=bar_colr) # Count of each category
-        
-        plt.title(title, fontsize=11)
-        plt.xticks(rotation=90)
-        
-        # Second Y axis, on the right
-        xx = plt.xlim()
-        if nb_subplots_per_row == 1:
-            ax2 = fig.add_subplot(nb_rows, nb_subplots_per_row, i, sharex = ax[n_row], frameon = False)
+            ax2 = fig.add_subplot(total_rows,n_subplots_per_row, i+1, sharex=ax[i//n_subplots_per_row,i%n_subplots_per_row], frameon=False)
+            ax2.plot(stats[col_target]['mean'].values, marker="x", color="b", linestyle="dashed")
+            
+            ax2.plot(stats["ref"].values, marker="_", color="black", linestyle="solid", linewidth=2.5)
+            ax2.plot(stats["ref-"].values, marker="_", color="black",linewidth=1)
+            ax2.plot(stats["ref+"].values, marker="_", color="black",linewidth=1)
+            
+            ax2.yaxis.tick_right()
+            ax2.axes.get_xaxis().set_visible(False)
+            
+            ax[i//n_subplots_per_row][i%n_subplots_per_row].set_xlim(xx)
+            
+            
         else:
-            ax2 = fig.add_subplot(nb_rows, nb_subplots_per_row, i, sharex = ax[n_row, n_col], frameon = False)
-        if not (col_target is None):
-            ax2.plot(tdf[col_target]['mean'].values, marker = 'x', color = 'b', linestyle = "solid") # Mean of each Category
-            ax2.plot(tdf["ref"].values, marker = '_', color = 'black', linestyle = "solid", linewidth=4.0) # Reference
-            ax2.plot(tdf["ref-"].values, marker = '_', color = 'black', linestyle = "solid", linewidth=1.0) # Reference
-            ax2.plot(tdf["ref+"].values, marker = '_', color = 'black', linestyle = "solid", linewidth=1.0) # Reference
-        ax2.yaxis.tick_right()
-        ax2.axes.get_xaxis().set_visible(False)
-        plt.xlim(xx)
-
-        n_col += 1
-        if n_col == nb_subplots_per_row:
-            n_col = 0
-            n_row += 1
+            vc = curFeat.value_counts()
+            vc = vc.head(top_ns).sort_index()
+            vc.index = vc.index.map(str)
+            vc = vc.rename(index={"-1000.0":"NaN"})
             
-    plt.show();
+            if top_n is not None:
+                vc.index = vc.index.map(lambda x: x[:top_n])
+            ax[i//n_subplots_per_row][i%n_subplots_per_row].bar(vc.index, vc.values, color=bar_color)
+        
+        ax[i//n_subplots_per_row][i%n_subplots_per_row].set_title(title, fontsize=12)
+        ax[i//n_subplots_per_row][i%n_subplots_per_row].tick_params(axis="x",rotation=90)
+    
+    
+    if(n_subplots_per_row*total_rows!=len(features)):
+        for i in range(1,1+(n_subplots_per_row*total_rows)-len(features)):
+            ax[-1][-i].axis("off")
+    
+    fig.tight_layout()
+    if save:
+        plt.savefig("CatPlot showing relation with target.png", bbox_inches="tight")
+    else:
+        plt.show()
 #########################################################################################
-
 ## Count trainable parameters for a PyTorch model
 def count_model_params(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -949,6 +968,564 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
+
+def summarize_all(df):
+    """https://www.kaggle.com/kabure/eda-feat-engineering-encode-conquer"""
+    print(f"Dataset Shape: {df.shape}")
+    summary = pd.DataFrame(df.dtypes,columns=['dtypes'])
+    summary = summary.reset_index()
+    summary['Name'] = summary['index']
+    summary = summary[['Name','dtypes']]
+    summary['Missing'] = df.isnull().sum().values    
+    summary['Uniques'] = df.nunique().values
+    summary['First Value'] = df.loc[0].values
+    summary['Second Value'] = df.loc[1].values
+    summary['Third Value'] = df.loc[2].values
+
+    for name in summary['Name'].value_counts().index:
+        summary.loc[summary['Name'] == name, 'Entropy'] = round(scipy.stats.entropy(df[name].value_counts(normalize=True), base=2),2) 
+
+    return summary
+
+
+
+
+# contingency table should be a dataframe
+# cramerV is kind of correlation between two categorical variables
+def calculate_cramerV(contingency_table):
+    # get the chi2 value
+    chi2 = scipy.stats.chi2_contingency(contingency_table)[0]
+    # count total values in the table
+    n = contingency_table.sum().sum()
+    # get the number of rows and columns in the table
+    r,c = contingency_table.shape
+    # calculate cramerV
+    cramerV = np.sqrt(chi2/(n*min(r-1, c-1)))
+    
+    return cramerV
+
+def summarize_categorical(train, test, use_feat=[], exclude_feat=[], target_for_cramerV=None):
+    """
+    train: train dataframe
+    test: test dataframe
+    
+    use_feat: list of features for which statistics will be calculated, if empty, uses all columns except the ones in exclue_feat
+    exclue_feat: features to be exclueded from the statistics calculation
+    
+    target_for_cramerV: target column label for cramerV calculation
+
+    """
+    
+    
+    all_stats = []
+    
+    if len(use_feat)==0:
+        use_feat = [c for c in list(train.columns) if c not in exclude_feat]
+    
+    for col in tqdm(use_feat):
+        vcTrain = dict(train[col].value_counts())
+        vcTest = dict(test[col].value_counts())
+        
+        set_train_only_vals = set(vcTrain.keys())-set(vcTest.keys())
+        set_test_only_vals = set(vcTest.keys())-set(vcTrain.keys())
+        
+        dict_train_only_vals = {k:v for k,v in vcTrain.items() if k in set_train_only_vals}
+        dict_test_only_vals = {k:v for k,v in vcTest.items() if k in set_test_only_vals}
+        
+        trainUniqueVals, trainTotalVals = len(vcTrain), pd.Series(vcTrain).sum()
+        trainOnlyUniqueVals, trainOnlyTotalVals = len(dict_train_only_vals), pd.Series(dict_train_only_vals).sum()
+        
+        testUniqueVals, testTotalVals = len(vcTest), pd.Series(vcTest).sum()
+        testOnlyUniqueVals, testOnlyTotalVals = len(dict_test_only_vals), pd.Series(dict_test_only_vals).sum()
+        
+        
+        if target_for_cramerV is not None:
+            contingency_table = pd.crosstab(train[col], train[target_for_cramerV].fillna(-1))
+            vc = calculate_cramerV(contingency_table)
+        else:
+            vc = -1
+            
+        all_stats.append((
+            col, round(vc, 3), train[col].nunique(),
+            test[col].nunique(),
+            str(trainOnlyUniqueVals)+"("+str(round(100.0*(trainOnlyUniqueVals/trainUniqueVals),3))+")",
+            str(testOnlyUniqueVals)+"("+str(round(100.0*(testOnlyUniqueVals/testUniqueVals),3))+")",
+            str(train[col].isnull().sum())+"("+str(round(100.0*(train[col].isnull().sum()/train.shape[0]),3))+")",
+            str(train[col].isnull().sum())+"("+str(round(100.0*(train[col].isnull().sum()/train.shape[0]),3))+")",
+            str(train[col].value_counts().index[0])+"("+str(round(100.0 * train[col].value_counts(normalize = True, dropna = False).values[0], 3))+")",
+            train[col].dtype
+        ))
+    
+    
+    df_stats = pd.DataFrame(all_stats,columns=[
+        "Feature",
+        "Target Cramer's V",
+        "Unique values (Train)",
+        "Unique values (Test)",
+        "Train only value counts",
+        "Test only value counts",
+        "Missing (Train)",
+        "Missing (Test)",
+        "Value with the highest counts (Train)",
+        "DataType"
+    ])
+    
+    if target_for_cramerV is None:
+        df_stats.drop(["Target Cramer's V"], axis=1, inplace=True)
+        
+    return df_stats, dict_train_only_vals, dict_test_only_vals
+
+########################################################## OBJECT DETECTION UTILS ################################################################################################################
+
+def xy_to_cxcy(xy):
+    """
+    Convert BBoxes from (x_min, y_min, x_max, y_max) to (center_x, center_y, width, height)
+    """
+    return torch.cat([ (xy[:, 2:] + xy[:, :2])/2.0, (xy[:, 2:] - xy[:,:2])], dim=1)
+
+def cxcy_to_xy(cxcy):
+    """
+    Convert BBoxes from (center_x, center_y, width, height) to (x_min, y_min, x_max, y_max)
+    """
+    return torch.cat([(cxcy[:, :2]-(cxcy[:,2:]/2.0)), (cxcy[:,:2]+(cxcy[:,2:]/2.0))], dim=1)
+
+
+def cxcy_to_gcxgcy(cxcy, priors_cxcy):
+    """
+    Encode (center_x, center_y, width, height) to difference wrt a prior
+    """
+    return torch.cat([(cxcy[:,:2] - priors_cxcy[:,:2])/(priors_cxcy[:,2:]/10), torch.log(cxcy[:,2:]/priors_cxcy[:,2:]) * 5], dim=1)
+
+
+def gcxgcy_to_cxcy(gcxgcy, priors_cxcy):
+    """
+    Decode encoded coordinates to (center_x, center_y, width, height) using a prior
+    """
+    return torch.cat([ (gcxgcy[:,:2]*(priors_cxcy[:,2:]/10))+priors_cxcy[:,:2], (torch.exp(gcxgcy[:,2:]/5)*priors_cxcy[:,2:]) ], dim=1)
+
+
+
+import torchvision.transforms.functional as FT
+
+def box_resize(image, boxes, dims=(300,300), return_percent_coords=True):
+    """
+    Resizing Image in Object Detection context.
+    Given, image, object bboxes and dims to resize, this function resizes the image to the specified
+    dimensions and adjusts the positions of the boxes according to the resized image
+    
+    """
+    new_image = FT.resize(image, dims)
+    old_dims = torch.FloatTensor([image.width, image.height, image.width, image.height]).unsqueeze(0)
+    new_boxes = boxes/old_dims
+    
+    if not return_percent_coords:
+        new_dims = torch.FloatTensor([dims[1], dims[0], dims[1], dims[0]]).unsqueeze(0)
+        new_boxes = new_boxes*new_dims
+        
+    
+    return new_image, new_boxes
+
+def box_flip(image, boxes):
+    new_image = FT.hflip(image)
+    new_boxes = boxes
+    new_boxes[:, 0] = image.width - boxes[:,0]
+    new_boxes[:, 2] = image.width - boxes[:,2]
+    new_boxes = new_boxes[:, [2,1,0,3]]
+    return new_image, new_boxes
+
+def box_expand(image, boxes, filler):
+    original_h = image.size(1)
+    original_w = image.size(2)
+    max_scale = 4
+    scale = random.uniform(1, max_scale)
+    new_h = int(original_h*scale)
+    new_w = int(original_w*scale)
+    
+    filler = torch.FloatTensor(filler)
+    new_image = torch.ones((3, new_h, new_w), dtype=torch.float) * filler.unsqueeze(1).unsqueeze(1)
+    
+    left = random.randint(0, new_w-original_w)
+    right = left+original_w
+    
+    top = random.randint(0, new_h-original_h)
+    bottom = top+original_h
+    
+    new_image[:,top:bottom, left:right] = image
+    
+    new_boxes = boxes+torch.FloatTensor([left, top, left, top]).unsqueeze(0)
+    
+    return new_image, new_boxes
+
+def box_random_crop(image, boxes, labels, difficulties):
+    original_h = image.size(1)
+    original_w = image.size(2)
+    
+    while True:
+        min_overlap = random.choice([0.0, 0.1, 0.3, 0.5, 0.7, 0.9, None])
+        
+        if min_overlap is None:
+            return image, boxes, labels, difficulties
+        
+        max_trials = 50
+        
+        for _ in range(max_trials):
+            min_scale = 0.3
+            scale_h = random.uniform(min_scale, 1.0)
+            scale_w = random.uniform(min_scale, 1.0)
+            
+            new_h = int(scale_h*original_h)
+            new_w = int(scale_w*original_w)
+            
+            aspect_ratio = new_h/new_w
+            
+            if not(0.5<aspect_ratio<2.0):
+                # end this trial
+                continue
+            
+            left = random.randint(0, original_w-new_w)
+            right = left+new_w
+            top = random.randint(0, original_h-new_h)
+            bottom = top+new_h
+            
+            crop = torch.FloatTensor([left, top, right, bottom])
+            overlap = find_jaccard_overlap(crop.unsqueeze(0), boxes).squeeze(0)
+            
+            if overlap.max().item()< min_overlap:
+                # end this trial
+                continue
+            
+            new_image = image[:, top:bottom, left:right]
+            
+            bb_centers = (boxes[:,:2]+boxes[:,2:])/2.0
+            
+            centers_in_crop = (bb_centers[:, 0]>left)*(bb_centers[:,0]<right)*(bb_centers[:,1]>top)*(bb_centers[:,1]<bottom)
+            
+            if not centers_in_crop.any():
+                # we have some how produced a crop not containing any objects!!
+                continue
+            
+            new_boxes = boxes[centers_in_crop,:]
+            new_labels = labels[centers_in_crop]
+            new_difficulties = difficulties[centers_in_crop]
+            
+            
+            new_boxes[:,:2] = torch.max(new_boxes[:,:2], crop[:2])
+            new_boxes[:,:2] -= crop[:2]
+            new_boxes[:,2:] = torch.min(new_boxes[:,2:], crop[2:])
+            new_boxes[:,2:] -= crop[:2]
+            
+            return new_image, new_boxes, new_labels, new_difficulties            
+def photometric_distort(image):
+    """
+    Distorts brightness, contrast, saturation and hue, each with 50% chance in random order
+    :param image: PIL image
+    """
+    
+    new_image = image
+    
+    distortions = [FT.adjust_brightness, FT.adjust_contrast, FT.adjust_saturation, FT.adjust_hue]
+    
+    random.shuffle(distortions)
+    
+    for d in distortions:
+        if random.random()<0.5:
+            if d.__name__ is "adjust_hue":
+                adjust_factor = random.uniform(-18/255.0, 18/255.0)
+            else:
+                adjust_factor = random.uniform(0.5, 1.5)
+            new_image = d(new_image, adjust_factor)
+    
+    return new_image
+
+
+def find_intersection(set_1, set_2):
+    """
+    Finds intersection between two sets of boxes
+    (n1,4) and (n2, 4)
+    returns (n1,n2)
+    """
+    
+    lower_bounds = torch.max(set_1[:, :2].unsqueeze(dim=1), set_2[:,:2].unsqueeze(dim=0))
+    upper_bounds = torch.min(set_1[:, 2:].unsqueeze(dim=1), set_2[:,2:].unsqueeze(dim=0))
+    
+    intersection = torch.clamp(upper_bounds-lower_bounds, min=0)
+    
+    return intersection[:,:,0]*intersection[:,:,1]
+
+
+def find_jaccard_overlap(set_1, set_2):
+    """
+    Jaccard overlap between two sets of boxes.
+    :param set_1: a tensor of dimension (n1, 4), where n1 is number of boxes each having 4 coordinates
+    :param set_2: a tensor of dimension (n2, 4), where n2 is number of boxes each having 4 coordinates
+    Coordinates are in (x1, y1, x2, y2) form, representing (top, left) and (bottom, right) corners
+    :return: a tensor of dimension (n1, n2) where each value represent the jaccard overlap between two corresponding boxes
+    """
+    
+    intersection = find_intersection(set_1, set_2)
+    areas_set_1 = (set_1[:, 2] - set_1[:,0])*(set_1[:,3]-set_1[:,1])
+    areas_set_2 = (set_2[:, 2] - set_2[:,0])*(set_2[:,3]-set_2[:,1])
+    
+    union = areas_set_1.unsqueeze(1)+areas_set_2.unsqueeze(0)-intersection
+    
+    return intersection/union
+
+
+def decimate(tensor, m):
+    """
+    Decimate a tensor by a factor of 'm', i.e. downsample by keeping every m'th value.
+    This is used to convert FC layers to equivalent Conv layers which are smaller in size.
+    
+    :param tensor: tensor to be decimated
+    :m: list of decimation factors for each dimension of the tensor; None if not to be decimated along a dimension
+    :return: decimated tensor
+    """
+    
+    assert(tensor.dim() == len(m))
+    
+    for d in range(tensor.dim()):
+        if m[d] is not None:
+            tensor = tensor.index_select(dim=d, index=torch.arange(0, tensor.size(d), m[d]).long())
+        
+    
+    return tensor
+
+
+def clip_gradients(model, clip_val):
+    nn.utils.clip_grad_norm_(model.parameters(), clip_val)
+
+
+def save_checkpoint(epoch, model, optimizer):
+    state = {
+        "epoch":epoch,
+        "state_dict":model.state_dict(),
+        "optimizer":optimizer
+    }
+    filename = "Checkpoint.pth.tar"
+    torch.save(state, filename)
+
+
+def plot_grad_flow(named_parameters):
+    ave_grads = []
+    layers = []
+    for n, p in named_parameters:
+        if(p.requires_grad) and ("bias" not in n):
+            layers.append(n)
+            ave_grads.append(p.grad.abs().mean())
+    plt.plot(ave_grads, alpha=0.3, color="b")
+    plt.hlines(0, 0, len(ave_grads)+1, linewidth=1, color="k" )
+    plt.xticks(range(0,len(ave_grads), 1), layers, rotation="vertical")
+    plt.xlim(xmin=0, xmax=len(ave_grads))
+    plt.xlabel("Layers")
+    plt.ylabel("average gradient")
+    plt.title("Gradient flow")
+    plt.grid(True)
+
+
+##################################################################################################################################################################
+################################################## RIGOROUS CROSS VALIDATION #####################################################################################
+# fold1 = ms.StratifiedKFold(n_splits=__N_FOLDS, shuffle=True, random_state=__SEED)
+# fold2 = ms.StratifiedKFold(n_splits=__N_FOLDS, shuffle=True, random_state=__SEED+3)
+# fold3 = ms.StratifiedKFold(n_splits=__N_FOLDS, shuffle=True, random_state=__SEED+5)
+
+# def cross_val_print(pipe, X, y, cv, scoring="roc_auc", best_score=0.):
+#     scores = ms.cross_validate(pipe, X, y, cv=cv, scoring=scoring, return_train_score=True)
+#     cv_score = scores["test_score"].mean()
+#     train_score = scores["train_score"].mean()
+    
+#     if cv == fold1:
+#         precision=1
+#     elif cv == fold2:
+#         precision=2
+#     elif cv == fold3:
+#         precision=3
+        
+    
+#     print("CV{} score on valid: {:.7f} - Previous best valid score: {:.7f} - Train mean score: {:6f}".format(precision, cv_score, best_score, train_score))
+    
+#     if cv_score>best_score:
+#         best_score = cv_score
+    
+#     return cv_score, best_score
+##################################################################################################################################################################
+################################################## TRANSFORMING CATEGORICAL TO ORDINAL ###########################################################################
+
+# def transform_feat(srs):
+#     transform_dict = {
+#         "ord_1":{"Novice":0,"Contributor":1,"Expert":2, "Master":3, "Grandmaster":4},
+#         "ord_2":{"Freezing":0,"Cold":1,"Warm":2, "Hot":3, "Boiling Hot":4,"Lava Hot":5},
+#         "nom_0":{"Blue":1,"Green":2, "Red":3},
+#         "nom_1":{"Circle":1,"Trapezoid":2, "Star":3,"Polygon":4,"Square":5,"Triangle":6},
+#         "nom_2":{"Dog":1,"Lion":2, "Snake":3,"Axolotl":4,"Cat":5,"Hamster":6},
+#         "nom_3":{"Finland":1,"Russia":2, "China":3,"Costa Rica":4,"Canada":5,"India":6},
+#         "nom_4":{"Bassoon":1,"Piano":2, "Oboe":3,"Theremin":4}   
+#     }
+    
+#     if srs.name == "ord_0":
+#         return srs-1
+#     elif srs.name == "ord_5":
+#         vals = list(np.sort(srs.unique()))
+#         return srs.map({l:i for i, l in enumerate(vals)})
+#     elif srs.name in ["ord_3", "ord_4"]:
+#         return srs.str.lower().map({l:i for i, l in enumerate(list(ascii_lowercase))})
+#     elif srs.name in transform_dict.keys():
+#         return srs.map(transform_dict[srs.name])
+#     else:
+#         return srs
+#
+##################################################################################################################################################################
+######################################################## BINNING HIGH CARDINALITY FEATURE #######################################################################
+# class BinsEncoder(BaseEstimator, TransformerMixin):
+#     """
+#         Binning high cardinality categorical values.
+        
+#     """
+#     def __init__(self, nbins=200, nmin=20):
+#         self.nbins = nbins
+#         self.nmin = nmin
+    
+#     def fit(self, X, y=None):
+#         tmp = pd.concat([X,y], axis=1)
+        
+#         averages = tmp.groupby(by=X.name)[y.name].mean()
+#         means_for_each_vals = dict(zip(averages.index.values, averages.values))
+#         bins = np.linspace(averages.min(), averages.max(), self.nbins)
+#         self.map_ = dict(zip(averages.index.values, np.digitize(averages.values, bins=bins)))
+        
+#         ## If some key has more than nmin observations, keep the original key, otherwise bin the key
+#         count = tmp.groupby(by=X.name)[y.name].count()
+#         count_for_each_vals = dict(zip(count.index.values, count.values))
+        
+#         for key, val in count_for_each_vals.items():
+#             if val>self.nmin:
+#                 self.map_[key]=key
+            
+#         return self
+    
+#     def transform(self, X, y=None):
+#         tmp = X.map(self.map_)
+#         tmp.fillna(random.choice(list(self.map_.values())), inplace=True)
+#         tmp = tmp.astype(str)
+#         return tmp
+##################################################################################################################################################################
+################################################## FEATURE ENGINEERING WITH BINNING AND ORDINAL TRANSFORM ########################################################
+# class FEUpgraded(BaseEstimator, TransformerMixin):
+#     def __init__(self, list_ordinal_features=[], feat_to_bins_encode={}):
+#         self.list_ordinal_features = list_ordinal_features
+#         self.feat_to_bins_encode = feat_to_bins_encode
+#         self.BinsEncoder = {}
+    
+#     def fit(self, X, y=None):
+#         for feat, val in self.feat_to_bins_encode.items():
+#             self.BinsEncoder[feat] = BinsEncoder(nbins=val[0], nmin=val[1])
+#             self.BinsEncoder[feat].fit(X[feat], y)
+#         return self
+#     def transform(self, X, y=None):
+#         df = X.copy()
+#         for v in self.feat_to_bins_encode.keys():
+#             df[v] = self.BinsEncoder[v].transform(df[v])
+            
+#         for v in self.list_ordinal_features:
+#             df[v] = transform_feat(df[v])
+        
+#         return df
+
+
+
+# class CrossValTransformer(BaseEstimator, TransformerMixin):
+#     def __init__(self, transformer, cv):
+#         self.transformer = transformer
+#         self.cv = cv
+#     def fit(self, X, y=None):
+#         self.mode = X[self.columns].mode().values[0]
+#         return self
+#     def transform(self, X, y=None):
+#         df = X.copy()
+#         for i, col in enumerate(self.columns):
+#             df[col].fillna(self.mode[i],inplace=True)
+#         return df
+#     def get_oof_transform(X, y):
+#         oof = pd.DataFrame(index=X.index, columns=X.columns)
+#         for train_idx, valid_idx in self.cv.split(X,y):
+#             train_X = X.loc[train_idx]
+#             train_y = y.loc[train_idx]
+#             valid_X = X.loc[valid_idx]
+#             valid_y = y.loc[valid_idx]
+            
+#             self.transformer.fit(train_X, train_y)
+#             oof_txf = self.transformer(valid_X)
+            
+#             oof.loc[valid_idx] = oof_txf
+#         return oof
+
+
+
+# def preprocessor(X_train, y_train, feat1, txf1, feat2, txf2, feat3, txf3, feat4, txf4, feat5, txf5, verbose=False):
+#     if(verbose):
+#         print("Preprocessing....")
+#     st = time.time()
+    
+#     preprocessed_x_1 = txf1.fit_transform(X_train[feat1], y_train).astype('float') # ordinal
+#     preprocessed_x_2 = txf2.fit_transform(X_train[feat2], y_train) # one hot
+#     preprocessed_x_3 = txf3.get_oof_transform(X_train[feat3], y_train).astype("float") # trg
+#     preprocessed_x_4 = txf4.get_oof_transform(X_train[feat4], y_train).astype("float") # cat
+#     preprocessed_x_5 = txf5.get_oof_transform(X_train[feat5], y_train).astype("float") # woe
+    
+#     # merge preprocessed
+#     PPX_train = scipy.sparse.hstack([
+#         preprocessed_x_1, preprocessed_x_2,
+#         preprocessed_x_3, preprocessed_x_4,
+#         preprocessed_x_5]).tocsr()
+    
+#     if verbose:
+#         print("Preprocessing....Done -- Time Taken: {}".format(datetime.timedelta(seconds=time.time()-st)))
+#     return PPX_train, y_train
+
+# def cross_val_train_f(model, X_train, y_train, cv, score_function, best_score, verbose=False):
+#     start_time = time.time()
+    
+#     valid_scores = []
+#     train_scores = []
+#     for i, (train_idx, valid_idx) in enumerate(cv.split(X_train, y_train)):
+#         if verbose:
+#             print("Training....Fold {}".format(i+1))
+#         train_X = X_train[train_idx]
+#         train_y = y_train.loc[train_idx]
+        
+#         valid_X = X_train[valid_idx]
+#         valid_y = y_train.loc[valid_idx]
+        
+#         # fit and score
+#         model.fit(train_X, train_y)
+#         train_score = score_function(train_y, model.predict_proba(train_X)[:,1])
+#         valid_score = score_function(valid_y, model.predict_proba(valid_X)[:,1])
+        
+#         if verbose:
+#             print("Fold {} train score: {:0.5f}".format(i+1, train_score))
+#             print("Fold {} valid score: {:0.5f}".format(i+1, valid_score))
+        
+        
+#         train_scores.append(train_score)
+#         valid_scores.append(valid_score)
+    
+#     cv_score = np.array(valid_scores).mean()
+#     train_score = np.array(train_scores).mean()
+    
+#     down = '\u2193'
+#     up = "\u2191"
+#     curarr = ""
+#     if (cv_score-best_score)>0:
+#         curarr = up
+#     elif (cv_score-best_score)<0:
+#         curarr = down
+
+#     print("{}CV valid score: {:.7f} - Previous best score: {:.7f} - Train score: {:6f} - Time {}".format(curarr, cv_score, best_score, train_score, str(datetime.timedelta(seconds=time.time()-start_time))))
+    
+#     return cv_score
+##################################################################################################################################################################
+
+
+
 ## ALL IMPORTS FOR A NEW NOTEBOOK
 __SEED = 0
 __N_FOLDS = 5
@@ -958,7 +1535,8 @@ import os, sys, random, math
 import matplotlib.pyplot as plt
 # %matplotlib inline
 plt.style.use('ggplot')
-from tqdm import tqdm_notebook
+
+from tqdm.notebook import tqdm
 import numpy as np
 import pandas as pd
 pd.set_option('max_colwidth', 500)
@@ -984,25 +1562,14 @@ from sklearn import metrics
 from sklearn import preprocessing as pp
 from sklearn import model_selection as ms
 
-import torch_utils
+import ml_utils as mu
 import time
+import time, datetime, pickle
 
-font = {'size'   : 20}
 
+# fold1 = ms.StratifiedKFold(n_splits=__N_FOLDS, shuffle=True, random_state=__SEED)
+# fold2 = ms.StratifiedKFold(n_splits=__N_FOLDS, shuffle=True, random_state=__SEED+3)
+# fold3 = ms.StratifiedKFold(n_splits=__N_FOLDS, shuffle=True, random_state=__SEED+5)
+font = {'size'   : 14}
 matplotlib.rc('font', **font)
-
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-###########################################################################
-# MAP CATEGORICAL NOMINAL VALUES WHICH ARE NOT IN BOTH TRAIN AND TEST TO A SINGLE UNIQUE VALUE
-# for col in range(5,10):
-#     col = "nom_"+str(col)
-#     train_uniq = set(train_df[col].unique())
-#     test_uniq = set(test_df[col].unique())
-    
-#     xor_cat = train_uniq ^ test_uniq
-    
-#     if len(xor_cat)>0:
-#         catted.loc[catted[col].isin(xor_cat), col] = "xor"
-
-###########################################################################

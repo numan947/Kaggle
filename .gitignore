@@ -331,6 +331,15 @@
 **/*.pt
 **/*.csv
 **/*.zip
-LeafClassification/images/*
+**/*.tar
+**/LeafClassification/images/*
 **/.data
 **/.vector_cache
+**/SSD_MultiBox_Detector/train/
+**/CategoricalFeatureEncoding_II/**/**/*.csv
+**/CategoricalFeatureEncoding_II/**/**/*.index
+**/CategoricalFeatureEncoding_II/**/**/checkpoint
+**/CategoricalFeatureEncoding_II/**/**/*.tsv
+**/CategoricalFeatureEncoding_II/**/**/*.tfevents
+**/CategoricalFeatureEncoding_II/**/**/*.json
+**/CategoricalFeatureEncoding_II/nn_model.w8.data-00000-of-00001
